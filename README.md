@@ -1,4 +1,4 @@
-# 🕉️ Vedic RAG — Jnana Labs
+# Jnana — Jnana Labs
 
 A Retrieval-Augmented Generation (RAG) pipeline over Vedic scriptures from [Vedabase.io](https://vedabase.io), built by [Jnana Labs](https://github.com/JnanaLabs).
 
