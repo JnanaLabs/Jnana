@@ -1,27 +1,45 @@
 """
 Generator
-Takes retrieved chunks and a user query, builds a prompt, and calls the LLM.
-Supports OpenAI GPT-4o-mini (default) and Google Gemini Flash.
+Takes retrieved chunks and a user query, builds a prompt, and generates an answer.
+
+Provider priority (auto-detected from env):
+  1. OpenAI  — if OPENAI_API_KEY is set
+  2. Gemini  — fallback (free tier, generous limits)
+
+Models configurable via .env:
+  OPENAI_CHAT_MODEL   (default: gpt-4o-mini)
+  GEMINI_CHAT_MODEL   (default: gemini-1.5-flash)
 """
 
 import os
 from dotenv import load_dotenv
+from loguru import logger
 
 load_dotenv()
 
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")  # "openai" or "gemini"
-
-SYSTEM_PROMPT = """You are Jnana, an expert on Vedic scriptures including the Bhagavad-gita, 
+SYSTEM_PROMPT = """You are Jnana, an expert on Vedic scriptures including the Bhagavad-gita,
 Srimad-Bhagavatam, Caitanya-caritamrta, and other works by Srila Prabhupada.
 
-Answer questions using ONLY the provided scripture passages. 
+Answer questions using ONLY the provided scripture passages.
 Always cite the specific verse reference (e.g. BG 2.47, SB 1.2.6).
 If the answer is not in the provided passages, say so honestly.
 Be respectful, clear, and spiritually illuminating in your responses."""
 
 
+def _active_provider() -> str:
+    """Auto-detect which LLM provider to use based on available API keys."""
+    if os.getenv("OPENAI_API_KEY"):
+        logger.debug("LLM provider: OpenAI")
+        return "openai"
+    if os.getenv("GEMINI_API_KEY"):
+        logger.debug("LLM provider: Gemini (fallback)")
+        return "gemini"
+    raise EnvironmentError(
+        "No LLM API key found. Set OPENAI_API_KEY or GEMINI_API_KEY in your .env file."
+    )
+
+
 def format_context(chunks: list[dict]) -> str:
-    """Format retrieved chunks into a readable context block."""
     context_parts = []
     for i, chunk in enumerate(chunks, 1):
         ref = chunk.get("title") or f"{chunk.get('book_id')} {chunk.get('chapter')}.{chunk.get('verse')}"
@@ -29,11 +47,13 @@ def format_context(chunks: list[dict]) -> str:
     return "\n\n---\n\n".join(context_parts)
 
 
-def generate_openai(query: str, context: str) -> str:
+def _generate_openai(query: str, context: str) -> str:
     from openai import OpenAI
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    model = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
+    logger.info(f"Generating with OpenAI model: {model}")
     response = client.chat.completions.create(
-        model=os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini"),
+        model=model,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"Scripture passages:\n\n{context}\n\nQuestion: {query}"}
@@ -44,11 +64,13 @@ def generate_openai(query: str, context: str) -> str:
     return response.choices[0].message.content
 
 
-def generate_gemini(query: str, context: str) -> str:
+def _generate_gemini(query: str, context: str) -> str:
     import google.generativeai as genai
     genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+    model_name = os.getenv("GEMINI_CHAT_MODEL", "gemini-1.5-flash")
+    logger.info(f"Generating with Gemini model: {model_name}")
     model = genai.GenerativeModel(
-        model_name=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
+        model_name=model_name,
         system_instruction=SYSTEM_PROMPT
     )
     prompt = f"Scripture passages:\n\n{context}\n\nQuestion: {query}"
@@ -58,16 +80,17 @@ def generate_gemini(query: str, context: str) -> str:
 
 def generate(query: str, chunks: list[dict]) -> dict:
     """
-    Generate an answer from retrieved chunks.
+    Generate a grounded answer from retrieved scripture chunks.
 
     Returns:
-        dict with 'answer', 'sources' (list of references), and 'chunks_used'
+        dict with keys: answer (str), sources (list), chunks_used (int), provider (str)
     """
     if not chunks:
         return {
             "answer": "I could not find relevant scripture passages for your question. Please try rephrasing.",
             "sources": [],
-            "chunks_used": 0
+            "chunks_used": 0,
+            "provider": "none"
         }
 
     context = format_context(chunks)
@@ -76,13 +99,12 @@ def generate(query: str, chunks: list[dict]) -> dict:
         for c in chunks
     ]
 
-    if LLM_PROVIDER == "gemini":
-        answer = generate_gemini(query, context)
-    else:
-        answer = generate_openai(query, context)
+    provider = _active_provider()
+    answer = _generate_openai(query, context) if provider == "openai" else _generate_gemini(query, context)
 
     return {
         "answer": answer,
         "sources": sources,
-        "chunks_used": len(chunks)
+        "chunks_used": len(chunks),
+        "provider": provider
     }

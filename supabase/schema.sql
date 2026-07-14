@@ -1,4 +1,11 @@
--- Enable pgvector extension
+-- ─────────────────────────────────────────────────────────────────
+-- Jnana — Vedic RAG Schema
+-- Using Gemini text-embedding-004 → dim=768
+-- If switching to OpenAI text-embedding-3-small, change 768 → 1536
+-- If switching to local BAAI/bge-small-en-v1.5, change 768 → 384
+-- ─────────────────────────────────────────────────────────────────
+
+-- Enable pgvector
 create extension if not exists vector;
 
 -- Main chunks table
@@ -14,22 +21,24 @@ create table if not exists vedic_chunks (
   translation text,
   chunk_type  text,  -- 'verse_full', 'verse_only', 'purport'
   text        text not null,
-  embedding   vector(1536),  -- OpenAI text-embedding-3-small dimension
+  embedding   vector(768),  -- Gemini text-embedding-004
   created_at  timestamptz default now()
 );
 
--- Index for fast vector search
+-- Vector search index
 create index if not exists vedic_chunks_embedding_idx
   on vedic_chunks
   using ivfflat (embedding vector_cosine_ops)
   with (lists = 100);
 
--- Index for book filtering
+-- Book filter index
 create index if not exists vedic_chunks_book_id_idx on vedic_chunks(book_id);
 
--- RPC: semantic search (no filter)
+-- ─────────────────────────────────────────────────────────────────
+-- RPC: semantic search (no book filter)
+-- ─────────────────────────────────────────────────────────────────
 create or replace function match_vedic_chunks(
-  query_embedding vector(1536),
+  query_embedding vector(768),
   match_count int default 6,
   similarity_threshold float default 0.75
 )
@@ -57,9 +66,11 @@ as $$
   limit match_count;
 $$;
 
+-- ─────────────────────────────────────────────────────────────────
 -- RPC: semantic search with book filter
+-- ─────────────────────────────────────────────────────────────────
 create or replace function match_vedic_chunks_filtered(
-  query_embedding vector(1536),
+  query_embedding vector(768),
   filter_book_id  text,
   match_count int default 6,
   similarity_threshold float default 0.75

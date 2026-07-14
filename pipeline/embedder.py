@@ -2,10 +2,13 @@
 Embedder
 Loads chunked JSON, generates embeddings, and upserts into Supabase pgvector.
 
-Requires:
-    - SUPABASE_URL and SUPABASE_KEY in .env
-    - OPENAI_API_KEY in .env (or set EMBED_MODEL=local to use HuggingFace BAAI/bge-small-en)
-    - Supabase table: vedic_chunks (see README for SQL schema)
+Embedding provider priority (auto-detected):
+  1. OpenAI  — OPENAI_API_KEY set → text-embedding-3-small (dim=1536)
+  2. Gemini  — GEMINI_API_KEY set, OPENAI missing → text-embedding-004 (dim=768)
+  3. Local   — EMBED_MODEL=local or no keys → BAAI/bge-small-en-v1.5 (dim=384)
+
+WARNING: All chunks must use the same embedding model/dimension.
+If you switch models, drop the table and re-run full ingest.
 
 Usage:
     python pipeline/embedder.py --book bg
@@ -23,28 +26,55 @@ from loguru import logger
 load_dotenv()
 
 CHUNKED_DATA_DIR = Path("data/chunked")
-EMBED_MODEL = os.getenv("EMBED_MODEL", "openai")  # "openai" or "local"
-OPENAI_MODEL = "text-embedding-3-small"
 BATCH_SIZE = 100
 
 
-def get_openai_embeddings(texts: list[str]) -> list[list[float]]:
-    from openai import OpenAI
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    response = client.embeddings.create(model=OPENAI_MODEL, input=texts)
-    return [item.embedding for item in response.data]
-
-
-def get_local_embeddings(texts: list[str]) -> list[list[float]]:
-    from sentence_transformers import SentenceTransformer
-    model = SentenceTransformer("BAAI/bge-small-en-v1.5")
-    return model.encode(texts, normalize_embeddings=True).tolist()
+def _active_embed_provider() -> str:
+    if os.getenv("EMBED_MODEL") == "local":
+        return "local"
+    if os.getenv("OPENAI_API_KEY"):
+        return "openai"
+    if os.getenv("GEMINI_API_KEY"):
+        logger.warning(
+            "No OPENAI_API_KEY — falling back to Gemini embeddings (dim=768). "
+            "Ensure your Supabase schema uses vector(768)."
+        )
+        return "gemini"
+    logger.warning(
+        "No API keys found — falling back to local BAAI/bge-small-en-v1.5 (dim=384). "
+        "Ensure your Supabase schema uses vector(384)."
+    )
+    return "local"
 
 
 def get_embeddings(texts: list[str]) -> list[list[float]]:
-    if EMBED_MODEL == "local":
-        return get_local_embeddings(texts)
-    return get_openai_embeddings(texts)
+    provider = _active_embed_provider()
+
+    if provider == "openai":
+        from openai import OpenAI
+        model = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
+        logger.debug(f"Embedding with OpenAI: {model}")
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        response = client.embeddings.create(model=model, input=texts)
+        return [item.embedding for item in response.data]
+
+    elif provider == "gemini":
+        import google.generativeai as genai
+        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+        model = os.getenv("GEMINI_EMBED_MODEL", "models/text-embedding-004")
+        logger.debug(f"Embedding with Gemini: {model}")
+        # Gemini embed_content is per-text (no batch endpoint)
+        result = []
+        for text in texts:
+            res = genai.embed_content(model=model, content=text, task_type="retrieval_document")
+            result.append(res["embedding"])
+        return result
+
+    else:  # local
+        from sentence_transformers import SentenceTransformer
+        logger.debug("Embedding with local BAAI/bge-small-en-v1.5")
+        m = SentenceTransformer("BAAI/bge-small-en-v1.5")
+        return m.encode(texts, normalize_embeddings=True).tolist()
 
 
 def get_supabase_client():
@@ -72,11 +102,10 @@ def upsert_chunks(chunks: list[dict], embeddings: list[list[float]], supabase):
             "text": chunk["text"],
             "embedding": embedding
         })
-    # Upsert in batches
     for i in range(0, len(rows), BATCH_SIZE):
-        batch = rows[i:i+BATCH_SIZE]
+        batch = rows[i:i + BATCH_SIZE]
         supabase.table("vedic_chunks").upsert(batch, on_conflict="chunk_id").execute()
-        logger.info(f"  Upserted batch {i//BATCH_SIZE + 1} ({len(batch)} rows)")
+        logger.info(f"  Upserted batch {i // BATCH_SIZE + 1} ({len(batch)} rows)")
 
 
 def embed_book(book_id: str):
@@ -89,17 +118,18 @@ def embed_book(book_id: str):
         chunks = json.load(f)
 
     supabase = get_supabase_client()
-    logger.info(f"[{book_id}] Embedding {len(chunks)} chunks with model={EMBED_MODEL}")
+    provider = _active_embed_provider()
+    logger.info(f"[{book_id}] Embedding {len(chunks)} chunks | provider={provider}")
 
     for i in range(0, len(chunks), BATCH_SIZE):
-        batch_chunks = chunks[i:i+BATCH_SIZE]
+        batch_chunks = chunks[i:i + BATCH_SIZE]
         texts = [c["text"] for c in batch_chunks]
         embeddings = get_embeddings(texts)
         upsert_chunks(batch_chunks, embeddings, supabase)
-        logger.info(f"[{book_id}] Progress: {min(i+BATCH_SIZE, len(chunks))}/{len(chunks)}")
-        time.sleep(0.5)  # rate limit buffer
+        logger.info(f"[{book_id}] Progress: {min(i + BATCH_SIZE, len(chunks))}/{len(chunks)}")
+        time.sleep(0.5)
 
-    logger.success(f"[{book_id}] All chunks embedded and stored in Supabase.")
+    logger.success(f"[{book_id}] Done. All chunks embedded and stored.")
 
 
 if __name__ == "__main__":
