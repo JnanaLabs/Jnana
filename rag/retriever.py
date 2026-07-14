@@ -1,9 +1,9 @@
 """
 Retriever
-Performs semantic search over vedic_chunks in Supabase pgvector.
+Performs semantic search over vedic_chunks in Supabase using pgvector.
+Uses the read (anon) client — safe for the public API.
 
-Uses the same embedding provider that was used during ingestion.
-Make sure your EMBED_MODEL and API keys match what you used in embedder.py.
+Ensure EMBED_MODEL and API keys match exactly what was used during ingestion.
 """
 
 import os
@@ -17,13 +17,15 @@ DEFAULT_SIMILARITY_THRESHOLD = 0.75
 
 
 def _embed_query(query: str) -> list[float]:
-    """Embed query using the same provider used during ingestion."""
-    if os.getenv("EMBED_MODEL") == "local":
+    """Embed query using the same provider that was used at ingest time."""
+    setting = os.getenv("EMBED_MODEL", "auto").lower()
+
+    if setting == "local":
         from sentence_transformers import SentenceTransformer
         m = SentenceTransformer("BAAI/bge-small-en-v1.5")
         return m.encode([query], normalize_embeddings=True)[0].tolist()
 
-    if os.getenv("OPENAI_API_KEY"):
+    if setting == "openai" or (setting == "auto" and os.getenv("OPENAI_API_KEY")):
         from openai import OpenAI
         model = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
         logger.debug(f"Query embedding via OpenAI: {model}")
@@ -31,7 +33,7 @@ def _embed_query(query: str) -> list[float]:
         response = client.embeddings.create(model=model, input=[query])
         return response.data[0].embedding
 
-    if os.getenv("GEMINI_API_KEY"):
+    if setting == "gemini" or (setting == "auto" and os.getenv("GEMINI_API_KEY")):
         import google.generativeai as genai
         genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
         model = os.getenv("GEMINI_EMBED_MODEL", "models/text-embedding-004")
@@ -41,7 +43,7 @@ def _embed_query(query: str) -> list[float]:
 
     # Last resort: local
     from sentence_transformers import SentenceTransformer
-    logger.warning("No API keys — using local embedding model.")
+    logger.warning("No API keys — using local embedding model for query.")
     m = SentenceTransformer("BAAI/bge-small-en-v1.5")
     return m.encode([query], normalize_embeddings=True)[0].tolist()
 
@@ -50,17 +52,29 @@ def retrieve(
     query: str,
     top_k: int = DEFAULT_TOP_K,
     book_filter: str = None,
-    similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD
+    similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
 ) -> list[dict]:
-    from supabase import create_client
-    supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+    """
+    Retrieve top-k relevant scripture chunks for a query.
+
+    Args:
+        query: Natural language question
+        top_k: Number of chunks to return (1–20)
+        book_filter: Optional book_id to restrict search (e.g. 'bg', 'sb')
+        similarity_threshold: Minimum cosine similarity (0–1)
+
+    Returns:
+        List of chunk dicts with text, metadata, and similarity score
+    """
+    from core.supabase_client import get_read_client
+    supabase = get_read_client()
 
     query_embedding = _embed_query(query)
 
     params = {
         "query_embedding": query_embedding,
         "match_count": top_k,
-        "similarity_threshold": similarity_threshold
+        "similarity_threshold": similarity_threshold,
     }
     if book_filter:
         params["filter_book_id"] = book_filter
