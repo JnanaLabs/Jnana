@@ -1,0 +1,49 @@
+{
+  "books": [
+    {
+      "id": "bg",
+      "name": "Bhagavad-gita As It Is",
+      "base_url": "https://vedabase.io/en/library/bg/",
+      "chapters": 18
+    },
+    {
+      "id": "sb",
+      "name": "Srimad-Bhagavatam",
+      "base_url": "https://vedabase.io/en/library/sb/",
+      "cantos": 12
+    },
+    {
+      "id": "cc",
+      "name": "Sri Caitanya-caritamrta",
+      "base_url": "https://vedabase.io/en/library/cc/",
+      "sections": ["adi", "madhya", "antya"]
+    },
+    {
+      "id": "iso",
+      "name": "Sri Isopanisad",
+      "base_url": "https://vedabase.io/en/library/iso/",
+      "mantras": 18
+    },
+    {
+      "id": "noi",
+      "name": "Nectar of Instruction",
+      "base_url": "https://vedabase.io/en/library/noi/",
+      "verses": 11
+    },
+    {
+      "id": "nod",
+      "name": "Nectar of Devotion",
+      "base_url": "https://vedabase.io/en/library/nod/"
+    },
+    {
+      "id": "bns",
+      "name": "Brahma-samhita",
+      "base_url": "https://vedabase.io/en/library/bs/"
+    },
+    {
+      "id": "ssr",
+      "name": "Sri Sri Gurv-astaka",
+      "base_url": "https://vedabase.io/en/library/ssr/"
+    }
+  ]
+}
